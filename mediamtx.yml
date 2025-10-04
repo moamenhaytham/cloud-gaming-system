@@ -1,0 +1,25 @@
+# mediamtx.yml
+logLevel: info
+logDestinations: [stdout]
+metrics: no
+pprof: no
+
+api: yes
+apiAddress: 127.0.0.1:9997
+
+rtspDisable: yes
+
+rtmpDisable: no
+rtmpAddress: :1935
+
+hlsDisable: yes
+
+webRTCDisable: no
+webRTCAddress: :8889
+
+paths:
+  desktop:
+    readUser: ""
+    readPass: ""
+    publishUser: ""
+    publishPass: ""

@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>Cloud Gaming - الألعاب السحابية</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            background: #000; 
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #video {
+            width: 100vw;
+            height: 100vh;
+            object-fit: contain;
+            background: #000;
+            cursor: none;
+        }
+        #status {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: Arial;
+            z-index: 1000;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: red;
+            margin-left: 10px;
+            animation: pulse 2s infinite;
+        }
+        .dot.on { 
+            background: lime; 
+            animation: none;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        #error {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255,0,0,0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            display: none;
+            text-align: center;
+            z-index: 1001;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 18px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="status">
+        <span id="text">جاري التهيئة...</span>
+        <span class="dot" id="dot"></span>
+    </div>
+    <div id="error"></div>
+    <div id="loading">جاري تحميل البث...</div>
+    <video id="video" autoplay playsinline muted></video>
+
+    <script>
+        const video = document.getElementById('video');
+        const statusText = document.getElementById('text');
+        const dot = document.getElementById('dot');
+        const errorDiv = document.getElementById('error');
+        const loadingDiv = document.getElementById('loading');
+        
+        let ws, pc;
+        let mouse = {x:0, y:0};
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        function showError(message) {
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            loadingDiv.style.display = 'none';
+        }
+
+        function hideError() {
+            errorDiv.style.display = 'none';
+        }
+
+        function showLoading() {
+            loadingDiv.style.display = 'block';
+        }
+
+        function hideLoading() {
+            loadingDiv.style.display = 'none';
+        }
+
+        // WebSocket Connection
+        function connectWS() {
+            try {
+                ws = new WebSocket('ws://localhost:8765');
+                
+                ws.onopen = () => {
+                    dot.classList.add('on');
+                    statusText.textContent = 'متصل - جاري بدء البث';
+                    hideError();
+                    reconnectAttempts = 0;
+                    console.log('WebSocket connected');
+                };
+                
+                ws.onclose = (event) => {
+                    dot.classList.remove('on');
+                    statusText.textContent = 'غير متصل';
+                    
+                    if (reconnectAttempts < maxReconnectAttempts) {
+                        reconnectAttempts++;
+                        console.log(`إعادة الاتصال المحاولة ${reconnectAttempts}`);
+                        setTimeout(connectWS, 3000);
+                    } else {
+                        showError('فشل الاتصال بالخادم. يرجى تحديث الصفحة.');
+                    }
+                };
+                
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    showError('خطأ في الاتصال بخادم التحكم');
+                };
+                
+            } catch (error) {
+                console.error('Failed to connect WebSocket:', error);
+                showError('فشل في إنشاء اتصال WebSocket');
+            }
+        }
+
+        function send(cmd) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                try {
+                    ws.send(JSON.stringify(cmd));
+                } catch (error) {
+                    console.error('Failed to send command:', error);
+                }
+            }
+        }
+
+        // WebRTC Stream
+        async function startStream() {
+            try {
+                showLoading();
+                statusText.textContent = 'جاري الاتصال بالبث...';
+                
+                pc = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                });
+                
+                // إضافة مستقبل للفيديو فقط
+                pc.addTransceiver('video', { direction: 'recvonly' });
+                
+                pc.onconnectionstatechange = () => {
+                    console.log('Connection state:', pc.connectionState);
+                    if (pc.connectionState === 'connected') {
+                        statusText.textContent = 'البث نشط';
+                        hideLoading();
+                    } else if (pc.connectionState === 'failed') {
+                        showError('فشل الاتصال بالبث');
+                    }
+                };
+                
+                pc.oniceconnectionstatechange = () => {
+                    console.log('ICE connection state:', pc.iceConnectionState);
+                };
+
+                // إنشاء العرض وإرساله
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                
+                console.log('Sending offer to WHEP endpoint...');
+                const res = await fetch('http://localhost:8889/desktop/whep', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/sdp'},
+                    body: offer.sdp
+                });
+                
+                if (!res.ok) {
+                    throw new Error(`HTTP error! status: ${res.status}`);
+                }
+                
+                const answer = await res.text();
+                console.log('Received answer:', answer);
+                await pc.setRemoteDescription({ type: 'answer', sdp: answer });
+                
+                // معالجة تتبع الفيديو
+                pc.ontrack = (event) => {
+                    console.log('Received track:', event.track.kind);
+                    if (event.track.kind === 'video') {
+                        video.srcObject = event.streams[0];
+                        video.focus();
+                        
+                        video.onloadeddata = () => {
+                            console.log('Video data loaded');
+                            statusText.textContent = 'البث نشط';
+                            hideLoading();
+                        };
+                        
+                        video.oncanplay = () => {
+                            console.log('Video can play');
+                            hideLoading();
+                        };
+                    }
+                };
+                
+                // معالجة الأخطاء
+                video.onerror = (e) => {
+                    console.error('Video error:', e);
+                    showError('خطأ في تحميل الفيديو');
+                };
+                
+            } catch (error) {
+                console.error('WebRTC error:', error);
+                showError('فشل في بدء البث: ' + error.message);
+                
+                // إعادة المحاولة بعد 5 ثواني
+                setTimeout(startStream, 5000);
+            }
+        }
+
+        // Mouse events
+        function setupMouseEvents() {
+            video.onmousemove = (e) => {
+                if (!video.videoWidth || !video.videoHeight) return;
+                
+                const r = video.getBoundingClientRect();
+                mouse.x = Math.round((e.clientX - r.left) * video.videoWidth / r.width);
+                mouse.y = Math.round((e.clientY - r.top) * video.videoHeight / r.height);
+                send({type:'mousemove', x:mouse.x, y:mouse.y});
+            };
+
+            video.onmousedown = (e) => {
+                e.preventDefault();
+                const btn = ['left','middle','right'][e.button] || 'left';
+                send({type:'mousedown', button:btn, x:mouse.x, y:mouse.y});
+            };
+
+            video.onmouseup = (e) => {
+                e.preventDefault();
+                const btn = ['left','middle','right'][e.button] || 'left';
+                send({type:'mouseup', button:btn, x:mouse.x, y:mouse.y});
+            };
+
+            video.onwheel = (e) => {
+                e.preventDefault();
+                send({type:'scroll', delta:-e.deltaY, x:mouse.x, y:mouse.y});
+            };
+        }
+
+        // Keyboard events
+        function setupKeyboardEvents() {
+            video.onkeydown = (e) => {
+                e.preventDefault();
+                send({type:'keydown', key:e.key});
+            };
+
+            video.onkeyup = (e) => {
+                e.preventDefault();
+                send({type:'keyup', key:e.key});
+            };
+
+            video.oncontextmenu = (e) => e.preventDefault();
+        }
+
+        // Start everything
+        function initialize() {
+            setupMouseEvents();
+            setupKeyboardEvents();
+            connectWS();
+            
+            // بدء البث بعد تأخير بسيط
+            setTimeout(startStream, 1000);
+            
+            // جعل الفيديو قابلاً للتركيز
+            video.tabIndex = 0;
+            video.focus();
+        }
+
+        // Start when page loads
+        window.addEventListener('load', initialize);
+        
+        // إعادة المحاولة عند النقر على صفحة الخطأ
+        errorDiv.addEventListener('click', () => {
+            hideError();
+            initialize();
+        });
+    </script>
+</body>
+</html>
